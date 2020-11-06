@@ -18,10 +18,18 @@ TYPED_TEST(MultiSignatureTests, CanInvokeMultipleSignatures) {
   EXPECT_FALSE(left(std::false_type{}));
 }
 
-TYPED_TEST(MultiSignatureTests, CanInvokeGenericSignatures) {
+struct lambda {
+  template <class T>
+  bool operator()(T value) const {
+    return T::value;
+  }
+};
+
+ TYPED_TEST(MultiSignatureTests, CanInvokeGenericSignatures) {
   typename TestFixture::template left_multi_t<bool(std::true_type) const,
                                               bool(std::false_type) const>
-      left = [](auto value) { return bool(value); };
+      //left = [](auto value) { return bool(value); };
+   left = lambda();
 
   EXPECT_TRUE(left(std::true_type{}));
   EXPECT_FALSE(left(std::false_type{}));

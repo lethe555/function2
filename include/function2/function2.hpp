@@ -128,6 +128,63 @@
 namespace fu2 {
 inline namespace abi_400 {
 namespace detail {
+
+#if !defined(_MSVC_LANG) && __cplusplus < 201402L
+
+namespace std {
+template <bool b, class T = void>
+using enable_if_t = typename ::std::enable_if<b, T>::type;
+
+template <class T>
+using decay_t = typename ::std::decay<T>::type;
+
+template <bool b, class T1, class T2>
+using conditional_t = typename ::std::conditional<b, T1, T2>::type;
+
+template <typename T>
+using add_cv_t = typename ::std::add_cv<T>::type;
+
+template <typename T>
+using add_const_t = typename ::std::add_const<T>::type;
+
+template <typename T>
+using add_volatile_t = typename ::std::add_volatile<T>::type;
+
+template <typename T>
+using add_volatile_t = typename ::std::add_volatile<T>::type;
+
+template <typename T>
+using remove_pointer_t = typename ::std::remove_pointer<T>::type;
+
+template <size_t len, size_t align>
+using aligned_storage_t = typename ::std::aligned_storage<len, align>::type;
+
+template <class T>
+using remove_reference_t = typename ::std::remove_reference<T>::type;
+
+template <typename T>
+using remove_cv_t = typename ::std::remove_cv<T>::type;
+
+using namespace ::std;
+
+inline void* align(std::size_t alignment, std::size_t size, void*& ptr,
+                   std::size_t& space) {
+  std::size_t n = uintptr_t(ptr) & (alignment - 1);
+  if (n != 0) {
+    n = alignment - n;
+  }
+  void* p = 0;
+  if (n <= space && size <= space - n) {
+    p = static_cast<char*>(ptr) + n;
+    ptr = p;
+    space -= n;
+  }
+  return p;
+}
+
+} // namespace std
+#endif
+
 template <typename Config, typename Property>
 class function;
 
@@ -308,7 +365,7 @@ struct overload_impl<Current> : Current {
 };
 
 template <typename... T>
-constexpr auto overload(T&&... callables) {
+constexpr auto overload(T&&... callables) -> overload_impl<std::decay_t<T>...> {
   return overload_impl<std::decay_t<T>...>{std::forward<T>(callables)...};
 }
 } // namespace overloading
@@ -412,7 +469,7 @@ struct box_factory<box<IsCopyable, T, Allocator>> {
 /// Creates a box containing the given value and allocator
 template <bool IsCopyable, typename T, typename Allocator>
 auto make_box(std::integral_constant<bool, IsCopyable>, T&& value,
-              Allocator&& allocator) {
+              Allocator&& allocator) -> box<IsCopyable, std::decay_t<T>, std::decay_t<Allocator>> {
   return box<IsCopyable, std::decay_t<T>, std::decay_t<Allocator>>(
       std::forward<T>(value), std::forward<Allocator>(allocator));
 }
@@ -456,7 +513,7 @@ using transfer_volatile_t =
 template <typename T, typename Accessor>
 FU2_DETAIL_CXX14_CONSTEXPR auto retrieve(std::true_type /*is_inplace*/,
                                          Accessor from,
-                                         std::size_t from_capacity) {
+                                         std::size_t from_capacity) -> transfer_const_t<Accessor, transfer_volatile_t<Accessor, void>>* {
   using type = transfer_const_t<Accessor, transfer_volatile_t<Accessor, void>>*;
 
   /// Process the command by using the data inside the internal capacity
@@ -469,7 +526,7 @@ FU2_DETAIL_CXX14_CONSTEXPR auto retrieve(std::true_type /*is_inplace*/,
 /// through the allocator
 template <typename T, typename Accessor>
 constexpr auto retrieve(std::false_type /*is_inplace*/, Accessor from,
-                        std::size_t /*from_capacity*/) {
+                        std::size_t /*from_capacity*/) -> std::decay_t<decltype(from->ptr_)> {
 
   return from->ptr_;
 }
@@ -624,7 +681,7 @@ struct invoke_table<First> {
 
   /// Return the function pointer itself
   template <std::size_t Index>
-  static constexpr auto fetch(type pointer) noexcept {
+  static constexpr auto fetch(type pointer) noexcept -> std::decay_t<type>{
     static_assert(Index == 0U, "The index should be 0 here!");
     return pointer;
   }
@@ -655,7 +712,7 @@ struct invoke_table<First, Second, Args...> {
 
   /// Return the function pointer at the particular index
   template <std::size_t Index>
-  static constexpr auto fetch(type table) noexcept {
+  static constexpr auto fetch(type table) noexcept -> std::decay_t<decltype(std::get<Index>(*table))> {
     return std::get<Index>(*table);
   }
 
@@ -1013,13 +1070,17 @@ public:
 
   /// Invoke the function at the given index
   template <std::size_t Index, typename... Args>
-  constexpr decltype(auto) invoke(Args&&... args) const {
+  FU2_DETAIL_CXX14_CONSTEXPR auto invoke(Args&&... args) const
+      ->decltype(invoke_table_t::template fetch<Index>(vtable_)(std::forward<Args>(args)...))
+  {
     auto thunk = invoke_table_t::template fetch<Index>(vtable_);
     return thunk(std::forward<Args>(args)...);
   }
   /// Invoke the function at the given index
   template <std::size_t Index, typename... Args>
-  constexpr decltype(auto) invoke(Args&&... args) const volatile {
+  FU2_DETAIL_CXX14_CONSTEXPR auto invoke(Args&&... args) const volatile
+      -> decltype(invoke_table_t::template fetch<Index>(vtable_)(std::forward<Args>(args)...))
+  {
     auto thunk = invoke_table_t::template fetch<Index>(vtable_);
     return thunk(std::forward<Args>(args)...);
   }
@@ -1235,7 +1296,11 @@ public:
   /// We define this out of class to be able to forward the qualified
   /// erasure correctly.
   template <std::size_t Index, typename Erasure, typename... Args>
-  static constexpr decltype(auto) invoke(Erasure&& erasure, Args&&... args) {
+  static FU2_DETAIL_CXX14_CONSTEXPR auto invoke(Erasure&& erasure, Args&&... args)
+  -> decltype(erasure.vtable_.template invoke<Index>(
+          std::forward<Erasure>(erasure).opaque_ptr(), erasure.capacity(),
+          std::forward<Args>(args)...))
+  {
     auto const capacity = erasure.capacity();
     return erasure.vtable_.template invoke<Index>(
         std::forward<Erasure>(erasure).opaque_ptr(), capacity,
@@ -1304,7 +1369,7 @@ public:
 
   ~erasure() = default;
 
-  constexpr erasure&
+  FU2_DETAIL_CXX14_CONSTEXPR erasure&
   operator=(std::nullptr_t) noexcept(HasStrongExceptGuarantee) {
     invoke_table_ =
         invoke_table_t::template get_empty_invocation_table<IsThrowing>();
@@ -1312,17 +1377,17 @@ public:
     return *this;
   }
 
-  constexpr erasure& operator=(erasure&& right) noexcept {
+  FU2_DETAIL_CXX14_CONSTEXPR erasure& operator=(erasure&& right) noexcept {
     invoke_table_ = right.invoke_table_;
     view_ = right.view_;
     right = nullptr;
     return *this;
   }
 
-  constexpr erasure& operator=(erasure const& /*right*/) = default;
+  FU2_DETAIL_CXX14_CONSTEXPR erasure& operator=(erasure const& /*right*/) = default;
 
   template <typename OtherConfig>
-  constexpr erasure&
+  FU2_DETAIL_CXX14_CONSTEXPR erasure&
   operator=(erasure<true, OtherConfig, property_t> right) noexcept {
     invoke_table_ = right.invoke_table_;
     view_ = right.view_;
@@ -1330,14 +1395,14 @@ public:
   }
 
   template <typename T>
-  constexpr void assign(std::false_type /*use_bool_op*/, T&& callable) {
+  FU2_DETAIL_CXX14_CONSTEXPR void assign(std::false_type /*use_bool_op*/, T&& callable) {
     invoke_table_ = invoke_table_t::template get_invocation_view_table_of<
         std::decay_t<T>>();
     view_.ptr_ =
         address_taker<std::decay_t<T>>::take(std::forward<T>(callable));
   }
   template <typename T>
-  constexpr void assign(std::true_type /*use_bool_op*/, T&& callable) {
+  FU2_DETAIL_CXX14_CONSTEXPR void assign(std::true_type /*use_bool_op*/, T&& callable) {
     if (bool(callable)) {
       assign(std::false_type{}, std::forward<T>(callable));
     } else {
@@ -1351,7 +1416,8 @@ public:
   }
 
   template <std::size_t Index, typename Erasure, typename... T>
-  static constexpr decltype(auto) invoke(Erasure&& erasure, T&&... args) {
+  static FU2_DETAIL_CXX14_CONSTEXPR auto invoke(Erasure&& erasure, T&&... args)
+  -> decltype(invoke_table_t::template fetch<Index>(erasure.invoke_table_)(&(erasure.view_), 0UL, std::forward<T>(args)...)){
     auto thunk = invoke_table_t::template fetch<Index>(erasure.invoke_table_);
     return thunk(&(erasure.view_), 0UL, std::forward<T>(args)...);
   }
@@ -1669,7 +1735,7 @@ using object_size = std::integral_constant<std::size_t, 32U>;
 /// the internal small buffer to be sized according to the given size,
 /// and aligned with the given alignment.
 template <std::size_t Capacity,
-          std::size_t Alignment = alignof(std::max_align_t)>
+          std::size_t Alignment = alignof(::max_align_t)>
 struct capacity_fixed {
   static constexpr std::size_t capacity = Capacity;
   static constexpr std::size_t alignment = Alignment;
@@ -1776,7 +1842,7 @@ using detail::type_erasure::invocation_table::bad_function_call;
 /// \returns          A callable object which exposes the
 ///
 template <typename... T>
-constexpr auto overload(T&&... callables) {
+constexpr auto overload(T&&... callables) ->decltype(detail::overloading::overload(std::forward<T>(callables)...)) {
   return detail::overloading::overload(std::forward<T>(callables)...);
 }
 } // namespace fu2
